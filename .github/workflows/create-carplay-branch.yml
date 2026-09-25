@@ -1,0 +1,198 @@
+name: Create CarPlay compatibility branch
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: carplay-compatibility-3-30-1
+  cancel-in-progress: false
+
+env:
+  UPSTREAM_TAG: 3.30.1
+  UPSTREAM_COMMIT: e10d66db11aaa9725dc26f25d74f27d31a88a5f3
+  PATCH_BRANCH: sdk/3.30.1-carplay
+  GIT_AUTHOR_NAME: github-actions[bot]
+  GIT_AUTHOR_EMAIL: 41898282+github-actions[bot]@users.noreply.github.com
+  GIT_COMMITTER_NAME: github-actions[bot]
+  GIT_COMMITTER_EMAIL: 41898282+github-actions[bot]@users.noreply.github.com
+
+jobs:
+  patch:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Check out the new repository
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.repository.default_branch }}
+          fetch-depth: 0
+
+      - name: Check that the destination branch is new
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PYTHON'
+          import os
+          import subprocess
+
+          ref = "refs/heads/" + os.environ["PATCH_BRANCH"]
+          existing = subprocess.check_output(
+              ["git", "ls-remote", "--heads", "origin", ref], text=True
+          ).strip()
+          if existing:
+              raise SystemExit("Destination branch already exists; no changes were pushed.")
+          PYTHON
+
+      - name: Fetch and verify the upstream release
+        shell: bash
+        run: |
+          set -euo pipefail
+          git fetch --no-tags \
+            https://github.com/mapbox/mapbox-navigation-ios.git \
+            "refs/tags/$UPSTREAM_TAG"
+
+          test "$(git rev-parse 'FETCH_HEAD^{commit}')" = "$UPSTREAM_COMMIT"
+          test "$(git rev-parse --is-shallow-repository)" = "false"
+          git switch --create "$PATCH_BRANCH" "$UPSTREAM_COMMIT"
+
+          grep -F 'let mapsVersion: Version = "11.30.1"' Package.swift
+          grep -F 'let (navNativeVersion, navNativeChecksum, navNativeRevision) = ("324.30.1",' Package.swift
+
+      - name: Apply the CarPlay compatibility changes
+        shell: bash
+        run: |
+          set -euo pipefail
+          cat > "$RUNNER_TEMP/carplay-estimates.patch" <<'PATCH'
+          diff --git a/Sources/MapboxNavigationUIKit/CarPlay/CarPlayNavigationViewController.swift b/Sources/MapboxNavigationUIKit/CarPlay/CarPlayNavigationViewController.swift
+          --- a/Sources/MapboxNavigationUIKit/CarPlay/CarPlayNavigationViewController.swift
+          +++ b/Sources/MapboxNavigationUIKit/CarPlay/CarPlayNavigationViewController.swift
+          @@ -878,18 +878,37 @@ open class CarPlayNavigationViewController: UIViewController {
+                   // Check to see if we're in a tunnel.
+                   checkTunnelState(at: location, along: routeProgress)
+           
+          -        let congestionLevel = routeProgress.averageCongestionLevelRemainingOnLeg ?? .unknown
+                   guard let maneuver = carSession.upcomingManeuvers.first else { return }
+           
+          -        let routeDistance = localized(measurement: Measurement(distance: routeProgress.distanceRemaining))
+          +        let hasUnreachedIntermediateWaypoint = routeProgress.route.legs.count > 1
+          +            && routeProgress.legIndex < routeProgress.route.legs.count - 1
+          +
+          +        let displayedDistanceRemaining = hasUnreachedIntermediateWaypoint
+          +            ? routeProgress.currentLegProgress.distanceRemaining
+          +            : routeProgress.distanceRemaining
+          +
+          +        let displayedDurationRemaining = hasUnreachedIntermediateWaypoint
+          +            ? routeProgress.currentLegProgress.durationRemaining
+          +            : routeProgress.durationRemaining
+          +
+          +        let routeDistance = localized(
+          +            measurement: Measurement(distance: displayedDistanceRemaining)
+          +        )
+          +
+                   // Show "1 min" instead of "0 min" when less than 1 min remaining
+          -        var timeRemaining = routeProgress.durationRemaining
+          +        var timeRemaining = displayedDurationRemaining
+                   timeRemaining = timeRemaining > 0 ? max(timeRemaining, 60) : timeRemaining
+          +
+                   let routeEstimates = CPTravelEstimates(
+                       distanceRemaining: routeDistance,
+                       timeRemaining: timeRemaining
+                   )
+          -        mapTemplate.update(routeEstimates, for: carSession.trip, with: congestionLevel.asCPTimeRemainingColor)
+          +
+          +        mapTemplate.update(
+          +            routeEstimates,
+          +            for: carSession.trip,
+          +            with: .default
+          +        )
+           
+                   let stepProgress = routeProgress.currentLegProgress.currentStepProgress
+                   let stepDistance = localized(measurement: Measurement(distance: stepProgress.distanceRemaining))
+          diff --git a/Tests/MapboxNavigationPackageTests/CarPlayNavigationViewControllerTests.swift b/Tests/MapboxNavigationPackageTests/CarPlayNavigationViewControllerTests.swift
+          --- a/Tests/MapboxNavigationPackageTests/CarPlayNavigationViewControllerTests.swift
+          +++ b/Tests/MapboxNavigationPackageTests/CarPlayNavigationViewControllerTests.swift
+          @@ -71,10 +71,16 @@ class CarPlayNavigationViewControllerTests: TestCase {
+           
+                   carPlayNavigationViewController.progressDidChange(routeProgress)
+           
+          -        let distanceRemaining = Measurement(distance: routeProgress.distanceRemaining).localized()
+          +        let distanceRemaining = Measurement(
+          +            distance: routeProgress.currentLegProgress.distanceRemaining
+          +        ).localized()
+          +
+          +        var timeRemaining = routeProgress.currentLegProgress.durationRemaining
+          +        timeRemaining = timeRemaining > 0 ? max(timeRemaining, 60) : timeRemaining
+          +
+                   let expectedTravelEstimates = CPTravelEstimates(
+                       distanceRemaining: distanceRemaining,
+          -            timeRemaining: routeProgress.durationRemaining
+          +            timeRemaining: timeRemaining
+                   )
+                   let actualTravelEstimates = mapTemplateMock.travelEstimates
+           
+          PATCH
+
+          git apply --check "$RUNNER_TEMP/carplay-estimates.patch"
+          git apply "$RUNNER_TEMP/carplay-estimates.patch"
+          git diff --check
+
+      - name: Verify the complete change set
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PYTHON'
+          import hashlib
+          import subprocess
+          from pathlib import Path
+
+          expected = {
+              "Sources/MapboxNavigationUIKit/CarPlay/CarPlayNavigationViewController.swift":
+                  "3f75a7a0db6bfcdeccc7ce42c42400ae040fe346dc76af7df2796da22b62c600",
+              "Tests/MapboxNavigationPackageTests/CarPlayNavigationViewControllerTests.swift":
+                  "96790eba67667a7ebfbef51c3d929a4a5e7f0b6318b4f96341faef9d03c16104",
+          }
+          changed = subprocess.check_output(
+              ["git", "diff", "--name-only"], text=True
+          ).splitlines()
+          if set(changed) != set(expected):
+              raise SystemExit(f"Unexpected changed files: {changed}")
+          for name, expected_hash in expected.items():
+              actual = hashlib.sha256(Path(name).read_bytes()).hexdigest()
+              if actual != expected_hash:
+                  raise SystemExit(f"Content verification failed: {name}")
+          print("Verified both patched files and the complete change set.")
+          PYTHON
+
+      - name: Create and verify a new commit
+        shell: bash
+        run: |
+          set -euo pipefail
+          git add -- \
+            Sources/MapboxNavigationUIKit/CarPlay/CarPlayNavigationViewController.swift \
+            Tests/MapboxNavigationPackageTests/CarPlayNavigationViewControllerTests.swift
+          git -c commit.gpgsign=false commit \
+            -m "Adjust CarPlay travel estimates for intermediate stops"
+
+          test "$(git rev-parse HEAD^)" = "$UPSTREAM_COMMIT"
+          test "$(git rev-list --count "$UPSTREAM_COMMIT..HEAD")" = "1"
+          test "$(git show -s --format=%an HEAD)" = "$GIT_AUTHOR_NAME"
+          test "$(git show -s --format=%ae HEAD)" = "$GIT_AUTHOR_EMAIL"
+          test "$(git show -s --format=%cn HEAD)" = "$GIT_COMMITTER_NAME"
+          test "$(git show -s --format=%ce HEAD)" = "$GIT_COMMITTER_EMAIL"
+          test -z "$(git status --porcelain)"
+          git diff --check "$UPSTREAM_COMMIT" HEAD
+          git show --format=fuller --stat HEAD
+
+      - name: Push the compatibility branch
+        shell: bash
+        run: |
+          set -euo pipefail
+          git push origin "HEAD:refs/heads/$PATCH_BRANCH"
+          {
+            echo "Created branch: $PATCH_BRANCH"
+            echo "Base commit: $UPSTREAM_COMMIT"
+            echo "Patch commit: $(git rev-parse HEAD)"
+          } >> "$GITHUB_STEP_SUMMARY"
