@@ -878,18 +878,37 @@ open class CarPlayNavigationViewController: UIViewController {
         // Check to see if we're in a tunnel.
         checkTunnelState(at: location, along: routeProgress)
 
-        let congestionLevel = routeProgress.averageCongestionLevelRemainingOnLeg ?? .unknown
         guard let maneuver = carSession.upcomingManeuvers.first else { return }
 
-        let routeDistance = localized(measurement: Measurement(distance: routeProgress.distanceRemaining))
+        let hasUnreachedIntermediateWaypoint = routeProgress.route.legs.count > 1
+            && routeProgress.legIndex < routeProgress.route.legs.count - 1
+
+        let displayedDistanceRemaining = hasUnreachedIntermediateWaypoint
+            ? routeProgress.currentLegProgress.distanceRemaining
+            : routeProgress.distanceRemaining
+
+        let displayedDurationRemaining = hasUnreachedIntermediateWaypoint
+            ? routeProgress.currentLegProgress.durationRemaining
+            : routeProgress.durationRemaining
+
+        let routeDistance = localized(
+            measurement: Measurement(distance: displayedDistanceRemaining)
+        )
+
         // Show "1 min" instead of "0 min" when less than 1 min remaining
-        var timeRemaining = routeProgress.durationRemaining
+        var timeRemaining = displayedDurationRemaining
         timeRemaining = timeRemaining > 0 ? max(timeRemaining, 60) : timeRemaining
+
         let routeEstimates = CPTravelEstimates(
             distanceRemaining: routeDistance,
             timeRemaining: timeRemaining
         )
-        mapTemplate.update(routeEstimates, for: carSession.trip, with: congestionLevel.asCPTimeRemainingColor)
+
+        mapTemplate.update(
+            routeEstimates,
+            for: carSession.trip,
+            with: .default
+        )
 
         let stepProgress = routeProgress.currentLegProgress.currentStepProgress
         let stepDistance = localized(measurement: Measurement(distance: stepProgress.distanceRemaining))

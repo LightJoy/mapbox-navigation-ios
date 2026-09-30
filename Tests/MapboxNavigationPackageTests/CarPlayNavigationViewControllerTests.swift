@@ -71,10 +71,16 @@ class CarPlayNavigationViewControllerTests: TestCase {
 
         carPlayNavigationViewController.progressDidChange(routeProgress)
 
-        let distanceRemaining = Measurement(distance: routeProgress.distanceRemaining).localized()
+        let distanceRemaining = Measurement(
+            distance: routeProgress.currentLegProgress.distanceRemaining
+        ).localized()
+
+        var timeRemaining = routeProgress.currentLegProgress.durationRemaining
+        timeRemaining = timeRemaining > 0 ? max(timeRemaining, 60) : timeRemaining
+
         let expectedTravelEstimates = CPTravelEstimates(
             distanceRemaining: distanceRemaining,
-            timeRemaining: routeProgress.durationRemaining
+            timeRemaining: timeRemaining
         )
         let actualTravelEstimates = mapTemplateMock.travelEstimates
 
