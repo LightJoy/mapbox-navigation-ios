@@ -598,6 +598,11 @@ open class CarPlayNavigationViewController: UIViewController {
 
     var carSession: CPNavigationSession!
 
+    /// The active CarPlay navigation session, if guidance has started.
+    public var navigationSession: CPNavigationSession? {
+        carSession
+    }
+
     /// Begins a navigation session along the given trip.
     ///
     /// - Parameter trip: The trip to begin navigating along.
