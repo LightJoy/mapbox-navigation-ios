@@ -341,7 +341,6 @@ public class CarPlayManager: NSObject {
         return altsButton
     }()
 
-    @_spi(MapboxCarPlayInternal)
     public func showAlternativesListTemplate() {
         guard let template = carPlayNavigationViewController?.alternativesListTemplate() else {
             return
